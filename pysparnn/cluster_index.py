@@ -14,19 +14,7 @@ import random as _random
 import numpy as _np
 
 import pysparnn.matrix_distance
-
-
-def _k_best(tuple_list, k):
-    """For a list of tuples [(distance, value), ...] - Get the k-best tuples by
-    distance.
-    Args:
-        tuple_list: List of tuples. (distance, value)
-        k: Number of tuples to return.
-    """
-    tuple_lst = sorted(tuple_list, key=lambda x: x[0],
-                       reverse=False)[:k]
-
-    return tuple_lst
+from pysparnn.cluster_selection import _k_best, DefaultClusterSelector
 
 
 def _filter_unique(tuple_list):
@@ -81,6 +69,7 @@ class ClusterIndex(object):
 
     def __init__(self, features, records_data,
                  distance_type=pysparnn.matrix_distance.CosineDistance,
+                 cluster_selector_type=DefaultClusterSelector,
                  matrix_size=None,
                  parent=None):
         """Create a search index composed of recursively defined
@@ -96,12 +85,13 @@ class ClusterIndex(object):
             distance_type: Class that defines the distance measure to use.
             matrix_size: Ideal size for matrix multiplication. This controls
                 the depth of the tree. Defaults to 2 levels (approx). Highly
-                reccomended that the default value is used.
+                recommended that the default value is used.
         """
 
         self.is_terminal = False
         self.parent = parent
         self.distance_type = distance_type
+        self.cluster_selector = cluster_selector_type(distance_type)
         self.desired_matrix_size = matrix_size
         features = distance_type.features_to_matrix(features)
         num_records = features.shape[0]
@@ -122,28 +112,7 @@ class ClusterIndex(object):
             self.is_terminal = False
             records_data = _np.array(records_data)
 
-            records_index = list(_np.arange(features.shape[0]))
-            clusters_size = min(self.matrix_size, num_records)
-            clusters_selection = _random.sample(records_index, clusters_size)
-            clusters_selection = features[clusters_selection]
-
-            item_to_clusters = _collections.defaultdict(list)
-
-            root = distance_type(clusters_selection,
-                                 list(_np.arange(clusters_selection.shape[0])))
-
-            root.remove_near_duplicates()
-            root = distance_type(root.matrix,
-                                 list(_np.arange(root.matrix.shape[0])))
-
-            rng_step = self.matrix_size
-            for rng in range(0, features.shape[0], rng_step):
-                max_rng = min(rng + rng_step, features.shape[0])
-                records_rng = features[rng:max_rng]
-                for i, clstrs in enumerate(root.nearest_search(records_rng)):
-                    _random.shuffle(clstrs)
-                    for _, cluster in _k_best(clstrs, k=1):
-                        item_to_clusters[cluster].append(i + rng)
+            clusters_selection, item_to_clusters = self.cluster_selector.select_clusters(features)
 
             clusters = []
             cluster_keeps = []
@@ -298,7 +267,7 @@ class ClusterIndex(object):
         """
 
         # search no more than 1k records at once
-        # helps keap the matrix multiplies small
+        # helps keep the matrix multiplies small
         batch_size = 1000
         results = []
         rng_step = batch_size
@@ -361,7 +330,7 @@ class MultiClusterIndex(object):
        Creating more Indexes (random cluster allocations) increases the chances
        of finding a good match.
 
-       There are three perameters that impact recall. Will discuss them all
+       There are three parameters that impact recall. Will discuss them all
        here:
        1) MuitiClusterIndex(matrix_size)
            This impacts the tree structure (see cluster index documentation).
@@ -424,7 +393,7 @@ class MultiClusterIndex(object):
         self.indexes = []
         for _ in range(num_indexes):
             self.indexes.append((ClusterIndex(features, records_data,
-                                              distance_type, matrix_size)))
+                                              distance_type=distance_type, matrix_size=matrix_size)))
 
     def insert(self, feature, record):
         """Insert a single record into the index.
